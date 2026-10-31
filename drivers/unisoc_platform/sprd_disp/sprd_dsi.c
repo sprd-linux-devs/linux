@@ -122,6 +122,39 @@ static void dphy_hs_clk_enable_for_umb9230s(struct sprd_dsi *dsi)
 	sprd_dphy_hs_clk_en(dsi->phy, true);
 }
 
+static void sprd_dsi_enable_ili9488_dithering(struct sprd_panel *panel)
+{
+	/*
+	 * ILI9488 24-bit/pixel dithering needs DB_EN (E9h bit0) and
+	 * Dither_Enable (F8h 2nd parameter bit0) in addition to the
+	 * DPI[2:0]=111 and Bypass=1 the init tables already set.
+	 * F8h is "Adjust Control 4": 1st param 0x21, 2nd param bit2 is
+	 * fixed 1, bit1 is 3-Gamma_Enable, bit0 is Dither_Enable
+	 * (default 0x04, i.e. dithering off).
+	 */
+	static const u8 db_en[] = { 0xe9, 0x01 };
+	static const u8 dither_on[] = { 0xf8, 0x21, 0x05 };
+	struct device_node *np = panel->info.of_node;
+	ssize_t ret;
+
+	if (!np || strncmp(np->name, "lcd_ili9488", 11) ||
+	    panel->info.format != MIPI_DSI_FMT_RGB888)
+		return;
+
+	mutex_lock(&panel->lock);
+	if (panel->enabled) {
+		ret = mipi_dsi_generic_write(panel->slave, db_en,
+					     sizeof(db_en));
+		if (ret < 0)
+			DRM_ERROR("ILI9488 DB_EN failed: %zd\n", ret);
+		ret = mipi_dsi_generic_write(panel->slave, dither_on,
+					     sizeof(dither_on));
+		if (ret < 0)
+			DRM_ERROR("ILI9488 dithering failed: %zd\n", ret);
+	}
+	mutex_unlock(&panel->lock);
+}
+
 static void sprd_dsi_encoder_enable(struct drm_encoder *encoder)
 {
 	struct sprd_dsi *dsi = encoder_to_dsi(encoder);
@@ -154,6 +187,8 @@ static void sprd_dsi_encoder_enable(struct drm_encoder *encoder)
 			}
 		}
 
+		/* Bootloader handoff skips drm_panel_enable() on the first enable. */
+		sprd_dsi_enable_ili9488_dithering(panel);
 		mutex_unlock(&dsi->lock);
 		return;
 	}
@@ -182,6 +217,7 @@ static void sprd_dsi_encoder_enable(struct drm_encoder *encoder)
 		} else {
 			drm_panel_prepare(dsi->panel);
 			drm_panel_enable(dsi->panel);
+			sprd_dsi_enable_ili9488_dithering(panel);
 			if (dsi->ctx.dpms == DRM_MODE_DPMS_STANDBY) {
 				DRM_INFO("%s(panel enter doze)\n", __func__);
 				sprd_panel_enter_doze(dsi->panel);
